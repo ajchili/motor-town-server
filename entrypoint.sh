@@ -253,6 +253,7 @@ do_run() {
       aarch64) sdk=sdkarm64; plat=linuxarm64 ;;
       *)       sdk=sdk64;    plat=linux64 ;;
     esac
+    seed_steamcmd   # also when updates are skipped
     if [[ -f "$STEAMCMD_DIR/$plat/steamclient.so" ]]; then
       mkdir -p "$HOME/.steam"
       ln -sfn "$STEAMCMD_DIR/$plat" "$HOME/.steam/$sdk"

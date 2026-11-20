@@ -15,9 +15,9 @@ services:
       SERVER_ARGS: ${SERVER_ARGS:-}
       SKIP_UPDATE: ${SKIP_UPDATE:-0}
     ports:
-      - "7777:7777/udp"
+      # Steam game/query port. Optional: players can also connect through
+      # Steam's relays without it.
       - "27015:27015/udp"
-      - "27015:27015/tcp"
     volumes:
       - server-files:/home/steam/server
       - steam-data:/home/steam/.steam
@@ -26,6 +26,15 @@ services:
       # server updates never overwrite it. Edit it on the host and restart.
       - ./config:/home/steam/config
     restart: unless-stopped
+    # Hardening: nothing in the container needs root, extra capabilities, or a
+    # writable image. Everything that changes lives in the volumes or /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:exec,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   server-files:

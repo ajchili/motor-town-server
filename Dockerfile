@@ -117,8 +117,9 @@ COPY --from=proton /opt/proton /opt/proton
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN ln -s entrypoint.sh /usr/local/bin/motortown
 
-# 7777/udp game traffic, 27015 Steam query
-EXPOSE 7777/udp 27015/udp 27015/tcp
+# Steam game/query port. Players can also reach the server through Steam's
+# relays, so publishing it is optional.
+EXPOSE 27015/udp
 
 # Per-arch: which steamcmd client steamcmd.sh launches. Its default on x86 is
 # the 32-bit client, which no longer works, so pick the 64-bit one.
@@ -154,8 +155,13 @@ ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/panel-entrypoint.sh"]
 FROM base-${TARGETARCH} AS compose
 ARG PUID=1000
 ARG PGID=1000
+# steamcmd runs from a writable copy in the steam-data volume (it updates
+# itself), so the container can run with a read-only root filesystem. Caches
+# go to /tmp for the same reason.
 ENV STEAM_HOME=/home/steam \
-    STEAMCMD_DIR=/opt/steamcmd \
+    STEAMCMD_SEED=/opt/steamcmd \
+    STEAMCMD_DIR=/home/steam/.steam/steamcmd \
+    XDG_CACHE_HOME=/tmp/cache \
     SERVER_DIR=/home/steam/server \
     STEAM_COMPAT_DATA_PATH=/home/steam/compatdata \
     STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/steam/.steam/steam
@@ -164,7 +170,7 @@ RUN groupadd -g "$PGID" steam \
  && useradd -m -u "$PUID" -g steam -d "$STEAM_HOME" -s /bin/bash steam \
  && mkdir -p "$SERVER_DIR" "$STEAM_COMPAT_DATA_PATH" "$STEAM_COMPAT_CLIENT_INSTALL_PATH" \
  && chown -R steam:steam "$STEAM_HOME"
-COPY --from=steamcmd --chown=steam:steam /opt/steamcmd /opt/steamcmd
+COPY --from=steamcmd /opt/steamcmd /opt/steamcmd
 
 USER steam
 WORKDIR /home/steam
