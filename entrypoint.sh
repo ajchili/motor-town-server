@@ -63,25 +63,48 @@ do_login() {
   steamcmd +login "$STEAM_USER" +quit
 }
 
+# Quote a value for a steamcmd script line. steamcmd has no escape for '"'.
+steam_quote() {
+  if [[ "$1" == *'"'* || "$1" == *$'\n'* ]]; then
+    echo "Steam login values can't contain double quotes or newlines." >&2
+    return 1
+  fi
+  printf '"%s"' "$1"
+}
+
 do_update() {
   require_user || return 1
-  local beta_args=()
+  local user pass="" guard="" dir beta=""
+  user="$(steam_quote "$STEAM_USER")" || return 1
+  dir="$(steam_quote "$SERVER_DIR")" || return 1
+  if [[ -n "$STEAM_PASS" ]]; then pass=" $(steam_quote "$STEAM_PASS")" || return 1; fi
+  if [[ -n "$STEAM_AUTH" ]]; then guard="$(steam_quote "$STEAM_AUTH")" || return 1; fi
   if [[ -n "$STEAM_BETA" ]]; then
-    beta_args+=(-beta "$STEAM_BETA")
-    [[ -n "$STEAM_BETA_PASSWORD" ]] && beta_args+=(-betapassword "$STEAM_BETA_PASSWORD")
+    beta=" -beta $(steam_quote "$STEAM_BETA")" || return 1
+    if [[ -n "$STEAM_BETA_PASSWORD" ]]; then
+      beta+=" -betapassword $(steam_quote "$STEAM_BETA_PASSWORD")" || return 1
+    fi
   fi
-  local login_args=("$STEAM_USER")
-  [[ -n "$STEAM_PASS" ]] && login_args+=("$STEAM_PASS")
-  local guard_args=()
-  [[ -n "$STEAM_AUTH" ]] && guard_args+=(+set_steam_guard_code "$STEAM_AUTH")
-  # Force Windows depots: there is no Linux build of the server.
-  steamcmd \
-    +@sSteamCmdForcePlatformType windows \
-    +force_install_dir "$SERVER_DIR" \
-    "${guard_args[@]}" \
-    +login "${login_args[@]}" \
-    +app_update "$STEAM_APP_ID" "${beta_args[@]}" validate \
-    +quit
+  # The commands go through a script file rather than steamcmd's command line,
+  # where the password would show in `ps` inside the container and on the host.
+  # mktemp creates it readable only by us; it's removed as soon as steamcmd exits.
+  local script status=0
+  script="$(mktemp "${TMPDIR:-/tmp}/steamcmd.XXXXXX")"
+  {
+    # Exit non-zero when a command fails (a failed login or download), so a
+    # failed update is noticed; steamcmd otherwise exits 0 regardless.
+    echo '@ShutdownOnFailedCommand 1'
+    # Force Windows depots: there is no Linux build of the server.
+    echo '@sSteamCmdForcePlatformType windows'
+    echo "force_install_dir $dir"
+    if [[ -n "$guard" ]]; then echo "set_steam_guard_code $guard"; fi
+    echo "login $user$pass"
+    echo "app_update $STEAM_APP_ID$beta validate"
+    echo 'quit'
+  } > "$script"
+  steamcmd +runscript "$script" || status=$?
+  rm -f "$script"
+  return "$status"
 }
 
 find_exe() {
