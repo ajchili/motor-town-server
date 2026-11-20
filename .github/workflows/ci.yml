@@ -1,0 +1,184 @@
+# CI/CD for the Motor Town server images.
+#
+# Every push and pull request: lint the scripts, egg and compose file, then
+# build both images (panel + compose) for amd64 and arm64, each natively on
+# its own GitHub runner (no QEMU).
+#
+# Pushes to main and v* tags also publish the panel image to Docker Hub as one
+# multi-arch tag:
+#   main     -> :panel and :panel-<short sha>
+#   v1.2.3   -> :panel-1.2.3 and :panel-<short sha>
+#
+# Setup: a Docker Hub access token with Read & Write access, saved as the
+# repository secret DOCKERHUB_TOKEN. Actions are pinned to commit SHAs (the
+# comment gives the version) so a moved tag can't change what runs here.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR builds are cancelled; publishing runs always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: docker.io/ajchili/motor-town-server
+  DOCKERHUB_USERNAME: ajchili
+  # Publish only from main or a version tag (pull requests never get secrets).
+  PUBLISH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+
+jobs:
+  check:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shell scripts
+        run: shellcheck entrypoint.sh panel-entrypoint.sh scripts/seed-steamcmd.sh
+
+      - name: Egg
+        run: |
+          python3 -I - <<'PY'
+          import json, os, sys
+          egg = json.load(open("egg-motor-town.json"))
+          want = os.environ["IMAGE"] + ":panel"
+          images = list(egg["docker_images"].values()) + [egg["scripts"]["installation"]["container"]]
+          bad = [i for i in images if i != want]
+          if bad:
+              sys.exit(f"egg-motor-town.json uses {bad}, expected {want}")
+          print(f"egg OK: {len(egg['variables'])} variables, image {want}")
+          PY
+
+      - name: Compose file
+        env:
+          STEAM_USER: ci
+        run: docker compose config --quiet
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            # Free for public repositories.
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to Docker Hub
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Pushed by digest only; the merge job combines both arches under the tags.
+      - name: Build panel image
+        id: panel
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: panel
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ env.PUBLISH }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      # Not published; built so a change that breaks the compose image fails CI.
+      # Shares every stage but the last with the panel build.
+      - name: Build compose image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: compose
+          platforms: linux/${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+
+      - name: Save digest
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.panel.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: env.PUBLISH == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish
+    needs: build
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=panel,enable={{is_default_branch}}
+            type=semver,pattern={{version}},prefix=panel-
+            type=sha,prefix=panel-
+
+      - name: Create multi-arch tags
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          META_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          tags=()
+          while IFS= read -r tag; do tags+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$META_JSON")
+          sources=()
+          for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
+          if [[ ${#sources[@]} -ne 2 ]]; then
+            echo "expected 2 digests (amd64 + arm64), got ${#sources[@]}" >&2
+            exit 1
+          fi
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Inspect
+        env:
+          META_JSON: ${{ steps.meta.outputs.json }}
+        run: docker buildx imagetools inspect "$(jq -r '.tags[0]' <<< "$META_JSON")"
