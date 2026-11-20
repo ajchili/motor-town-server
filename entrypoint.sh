@@ -4,6 +4,8 @@
 #   update  install/update the dedicated server with the cached login
 #   start   update (unless SKIP_UPDATE=1) then run the server under Wine (default)
 #   run     run the server without updating
+# start/run take the server's command line as extra arguments, overriding
+# SERVER_ARGS (the panel egg's startup command uses this).
 #   shell   drop into bash
 set -euo pipefail
 
@@ -11,12 +13,20 @@ STEAM_APP_ID="${STEAM_APP_ID:-2223650}"           # "Motor Town: Behind The Whee
 STEAM_GAME_APP_ID="${STEAM_GAME_APP_ID:-1369670}" # the base game; what the server must identify as to Steam
 STEAM_BETA="${STEAM_BETA:-}"                      # e.g. "beta"
 STEAM_BETA_PASSWORD="${STEAM_BETA_PASSWORD:-}"    # e.g. "motortowndedi"
+# Login: the cached token is used when present. STEAM_PASS (and optionally a
+# fresh STEAM_AUTH Steam Guard code) are for hosts without an interactive
+# `login` step, like game panels; steamcmd also prompts for a missing Steam
+# Guard code on the console.
+STEAM_PASS="${STEAM_PASS:-}"
+STEAM_AUTH="${STEAM_AUTH:-}"
 SERVER_EXE="${SERVER_EXE:-}"                      # path relative to $SERVER_DIR; auto-detected if empty
 # Defaults from the server's own RunDedicatedServer.bat
 SERVER_ARGS="${SERVER_ARGS:-Jeju_World?listen? -server -log -useperfthreads}"
 # Kept outside the game files so updates don't touch it; passed via -DediConfig.
 DEDI_CONFIG="${DEDI_CONFIG:-/home/steam/config/DedicatedServerConfig.json}"
 USE_XVFB="${USE_XVFB:-1}"
+# Panel eggs expose updates as AUTO_UPDATE (1/0 or true/false).
+case "${AUTO_UPDATE:-1}" in 0|false|False|FALSE|no) SKIP_UPDATE=1 ;; esac
 # "wine" (default): run Proton's bundled Wine directly. "proton": `proton run`,
 # which crashes this server at startup (EXCEPTION_ACCESS_VIOLATION at 0x28):
 # it wires in Proton's Steam-client bridge, which expects a desktop Steam
@@ -27,34 +37,49 @@ export WINEDEBUG="${WINEDEBUG:--all}"
 export PROTON_USE_XALIA=0   # Proton's controller-accessibility helper; crashes headless
 WINE="$PROTON_DIR/files/bin/wine"
 
-steamcmd() { "$STEAMCMD_DIR/steamcmd.sh" "$@"; }
+# Panel image: steamcmd self-updates, so it runs from a writable copy of the
+# image's seed in the persistent server folder.
+seed_steamcmd() {
+  if [[ -n "${STEAMCMD_SEED:-}" && ! -x "$STEAMCMD_DIR/steamcmd.sh" ]]; then
+    echo "Copying steamcmd to $STEAMCMD_DIR..."
+    mkdir -p "$STEAMCMD_DIR"
+    cp -a "$STEAMCMD_SEED/." "$STEAMCMD_DIR/"
+  fi
+}
+
+steamcmd() { seed_steamcmd; "$STEAMCMD_DIR/steamcmd.sh" "$@"; }
 
 require_user() {
   if [[ -z "${STEAM_USER:-}" ]]; then
     echo "STEAM_USER is not set. The server files are only given to accounts that own Motor Town." >&2
-    exit 1
+    return 1
   fi
 }
 
 do_login() {
-  require_user
+  require_user || return 1
   echo "Logging in as $STEAM_USER. steamcmd will prompt for your password and Steam Guard code."
   echo "The session token is cached in the steam-data volume, so later updates won't prompt."
   steamcmd +login "$STEAM_USER" +quit
 }
 
 do_update() {
-  require_user
+  require_user || return 1
   local beta_args=()
   if [[ -n "$STEAM_BETA" ]]; then
     beta_args+=(-beta "$STEAM_BETA")
     [[ -n "$STEAM_BETA_PASSWORD" ]] && beta_args+=(-betapassword "$STEAM_BETA_PASSWORD")
   fi
+  local login_args=("$STEAM_USER")
+  [[ -n "$STEAM_PASS" ]] && login_args+=("$STEAM_PASS")
+  local guard_args=()
+  [[ -n "$STEAM_AUTH" ]] && guard_args+=(+set_steam_guard_code "$STEAM_AUTH")
   # Force Windows depots: there is no Linux build of the server.
   steamcmd \
     +@sSteamCmdForcePlatformType windows \
     +force_install_dir "$SERVER_DIR" \
-    +login "$STEAM_USER" \
+    "${guard_args[@]}" \
+    +login "${login_args[@]}" \
     +app_update "$STEAM_APP_ID" "${beta_args[@]}" validate \
     +quit
 }
@@ -71,6 +96,51 @@ find_exe() {
     found="$(find "$SERVER_DIR" -maxdepth 1 -iname '*server*.exe' 2>/dev/null | head -n1 || true)"
   fi
   echo "$found"
+}
+
+# Fill in keys missing from the config with the server's own sample, so a
+# config that holds only a few keys (as a panel writes it) still gets every
+# setting. Existing values are never changed, except that values whose sample
+# is a string are turned back into strings (a panel writes a numeric password
+# as a number). Keys taken from the sample are made safe first: the Host Web
+# API stays off and the sample's placeholder admins are dropped.
+merge_sample_config() {
+  local sample="$SERVER_DIR/DedicatedServerConfig_Sample.json"
+  [[ -f "$sample" ]] || return 0
+  python3 -I - "$sample" "$DEDI_CONFIG" <<'PY'
+import json, os, sys
+sample_path, config_path = sys.argv[1], sys.argv[2]
+with open(sample_path, encoding="utf-8-sig") as f:
+    sample = json.load(f)
+config = {}
+if os.path.exists(config_path):
+    try:
+        with open(config_path, encoding="utf-8-sig") as f:
+            config = json.load(f)
+    except ValueError as e:
+        print(f"Config: {config_path} is not valid JSON ({e}); leaving it as is", file=sys.stderr)
+        sys.exit(0)
+safe = {
+    "bEnableHostWebAPIServer": False,
+    "HostWebAPIServerPassword": "",
+    "Admins": [],
+    "PoliceRolePlayers": [],
+    "Password": "",
+}
+added = []
+for key, value in sample.items():
+    if key not in config:
+        config[key] = safe.get(key, value)
+        added.append(key)
+    elif isinstance(value, str) and isinstance(config[key], (int, float)) and not isinstance(config[key], bool):
+        config[key] = str(config[key])
+if added or not os.path.exists(config_path):
+    os.makedirs(os.path.dirname(config_path) or ".", exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"Config: added {len(added)} default keys from the sample to {config_path}")
+PY
 }
 
 do_run() {
@@ -92,10 +162,15 @@ do_run() {
   # Split SERVER_ARGS on spaces without glob expansion ("Jeju_World?listen?"
   # contains '?', which bash would otherwise treat as a filename wildcard).
   local args
-  set -f
-  # shellcheck disable=SC2206
-  args=($SERVER_ARGS)
-  set +f
+  if [[ $# -gt 0 ]]; then
+    args=("$@")
+  else
+    set -f
+    # shellcheck disable=SC2206
+    args=($SERVER_ARGS)
+    set +f
+  fi
+  merge_sample_config
   if [[ -f "$DEDI_CONFIG" ]]; then
     # Wine maps the Linux root to drive Z:
     args+=("-DediConfig=Z:${DEDI_CONFIG//\//\\}")
@@ -177,11 +252,29 @@ do_run() {
   return "$status"
 }
 
-case "${1:-start}" in
+do_start() {
+  if [[ "${SKIP_UPDATE:-0}" != "1" ]]; then
+    if ! do_update; then
+      # A failed update (Steam down, expired login) shouldn't keep an already
+      # installed server offline.
+      if [[ -n "$(find_exe)" ]]; then
+        echo "Update failed; starting the installed server anyway." >&2
+      else
+        echo "Update failed and no server is installed yet." >&2
+        exit 1
+      fi
+    fi
+  fi
+  do_run "$@"
+}
+
+cmd="${1:-start}"
+[[ $# -gt 0 ]] && shift
+case "$cmd" in
   login)  do_login ;;
   update) do_update ;;
-  start)  [[ "${SKIP_UPDATE:-0}" == "1" ]] || do_update; do_run ;;
-  run)    do_run ;;
+  start)  do_start "$@" ;;
+  run)    do_run "$@" ;;
   shell)  exec bash ;;
-  *)      exec "$@" ;;
+  *)      exec "$cmd" "$@" ;;
 esac

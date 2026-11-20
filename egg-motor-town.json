@@ -1,0 +1,143 @@
+{
+    "_comment": "Motor Town: Behind The Wheel dedicated server under GE-Proton. Pterodactyl PTDL_v2 format; imports into Calagopus, Pterodactyl and Pelican.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-11-20T00:00:00+00:00",
+    "name": "Motor Town: Behind The Wheel",
+    "author": "motor-town-server",
+    "description": "Motor Town: Behind The Wheel dedicated server (Windows build) running under GE-Proton's Wine. Needs a Steam account that owns Motor Town. Uses about 7 GB of memory once the world is loaded, so give it at least 10 GB. Players connect through Steam networking, so the server shows up in the game's server list without extra ports.",
+    "features": [],
+    "docker_images": {
+        "Motor Town (GE-Proton)": "motortown-server:panel"
+    },
+    "file_denylist": [],
+    "startup": "motortown start {{SERVER_MAP}}?listen? -server -log -useperfthreads",
+    "config": {
+        "files": "{\n    \"DedicatedServerConfig.json\": {\n        \"parser\": \"json\",\n        \"find\": {\n            \"ServerName\": \"{{server.build.env.SERVER_NAME}}\",\n            \"ServerMessage\": \"{{server.build.env.SERVER_MESSAGE}}\",\n            \"Password\": \"{{server.build.env.SERVER_PASSWORD}}\",\n            \"MaxPlayers\": \"{{server.build.env.MAX_PLAYERS}}\"\n        }\n    }\n}",
+        "startup": "{\n    \"done\": \"Session created!\"\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Motor Town: nothing to download here. The server files come from Steam with\n# an account that owns the game, and Steam Guard needs the live console, so the\n# first start downloads them (about 2 GB) instead.\nset -euo pipefail\ncd /mnt/server\necho \"Motor Town server: the first start downloads the game files with steamcmd.\"\necho \"If Steam asks for a Steam Guard code, type it into the console,\"\necho \"or put a fresh code in the Steam Guard Code variable and restart.\"\n",
+            "container": "motortown-server:panel",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Steam Username",
+            "description": "Steam account that owns Motor Town. The server files can't be downloaded anonymously.",
+            "env_variable": "STEAM_USER",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Password",
+            "description": "Only needed until the first successful login; steamcmd then keeps a login token in the server folder and you can clear this.",
+            "env_variable": "STEAM_PASS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:128",
+            "field_type": "text",
+            "secret": true
+        },
+        {
+            "name": "Steam Guard Code",
+            "description": "Optional. A fresh Steam Guard code for the next login. You can also type the code into the console when steamcmd asks for it.",
+            "env_variable": "STEAM_AUTH",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:8",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "Update the server with steamcmd on every start (1) or not (0).",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "boolean"
+        },
+        {
+            "name": "Server Name",
+            "description": "Shown in the server list.",
+            "env_variable": "SERVER_NAME",
+            "default_value": "Motor Town Server",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Message",
+            "description": "Shown to players after they connect.",
+            "env_variable": "SERVER_MESSAGE",
+            "default_value": "Welcome!",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Password",
+            "description": "Password to join. Leave empty for a public server.",
+            "env_variable": "SERVER_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Players",
+            "description": "Maximum number of players (1-100; 20 is recommended for average systems).",
+            "env_variable": "MAX_PLAYERS",
+            "default_value": "10",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,100",
+            "field_type": "text"
+        },
+        {
+            "name": "Map",
+            "description": "World to load.",
+            "env_variable": "SERVER_MAP",
+            "default_value": "Jeju_World",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Beta Branch",
+            "description": "The dedicated server is published on Steam's beta branch.",
+            "env_variable": "STEAM_BETA",
+            "default_value": "beta",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Beta Password",
+            "description": "Code that unlocks the beta branch, published by the developer.",
+            "env_variable": "STEAM_BETA_PASSWORD",
+            "default_value": "motortowndedi",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        }
+    ]
+}

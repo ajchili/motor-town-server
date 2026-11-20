@@ -12,6 +12,10 @@
 # can't run Wine (Rosetta: AVX signal-frame assertion; QEMU: Wine's fixed mmap
 # aborts and steamcmd crashes).
 #
+# Two targets:
+#   compose (default)  for docker compose; see compose.yaml
+#   panel              for Calagopus/Pterodactyl/Pelican; see egg-motor-town.json
+#
 # Layout: the big downloads (Proton, steamcmd) each live in their own stage that
 # depends only on its version ARG and the target arch, so changing runtime
 # packages, the entrypoint, or anything else in the final stage never
@@ -75,20 +79,13 @@ RUN case "$TARGETARCH" in \
  && seed-steamcmd.sh /opt/steamcmd "$manifest"
 
 # ---------------------------------------------------------------------------
-# Runtime
+# Runtime base shared by both images: packages, Proton, the entrypoint.
 FROM ${DEBIAN_IMAGE} AS runtime
 ARG TARGETARCH
-ARG PUID=1000
-ARG PGID=1000
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
-    STEAM_HOME=/home/steam \
-    STEAMCMD_DIR=/opt/steamcmd \
-    PROTON_DIR=/opt/proton \
-    SERVER_DIR=/home/steam/server \
-    STEAM_COMPAT_DATA_PATH=/home/steam/compatdata \
-    STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/steam/.steam/steam
+    PROTON_DIR=/opt/proton
 
 # steamcmd is native 64-bit on both arches, so no i386 libraries are needed.
 # Proton needs python3 and dlopens libvulkan at startup even for headless
@@ -104,24 +101,66 @@ RUN --mount=type=cache,id=apt-cache-${TARGETARCH},target=/var/cache/apt,sharing=
       xvfb xauth
 
 # Wine/Proton reads /etc/machine-id, which slim images don't ship.
-RUN tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id \
- && groupadd -g "$PGID" steam \
- && useradd -m -u "$PUID" -g steam -d "$STEAM_HOME" -s /bin/bash steam \
- && mkdir -p "$SERVER_DIR" "$STEAM_COMPAT_DATA_PATH" "$STEAM_COMPAT_CLIENT_INSTALL_PATH" \
- && chown -R steam:steam "$STEAM_HOME"
+RUN tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
 
-# Big, rarely-changing payloads first...
+# Big, rarely-changing payload first...
 COPY --from=proton /opt/proton /opt/proton
-COPY --from=steamcmd --chown=steam:steam /opt/steamcmd /opt/steamcmd
 
 # ...frequently-edited files last.
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
-
-USER steam
-WORKDIR /home/steam
+RUN ln -s entrypoint.sh /usr/local/bin/motortown
 
 # 7777/udp game traffic, 27015 Steam query
 EXPOSE 7777/udp 27015/udp 27015/tcp
+
+# Per-arch: which steamcmd client steamcmd.sh launches. Its default on x86 is
+# the 32-bit client, which no longer works, so pick the 64-bit one.
+FROM runtime AS base-amd64
+ENV STEAM_PLATFORM=linux64
+
+FROM runtime AS base-arm64
+ENV STEAM_PLATFORM=linuxarm64
+
+# ---------------------------------------------------------------------------
+# Game panel image (Calagopus / Pterodactyl / Pelican): `--target panel`.
+# Wings runs it as its own non-root UID with only /home/container mounted, so
+# everything that persists lives there: game files, the steamcmd copy (it
+# self-updates, so it must be writable), the Steam login token, the Wine
+# prefix. The egg's startup command arrives in $STARTUP.
+FROM base-${TARGETARCH} AS panel
+ENV HOME=/home/container \
+    USER=container \
+    SERVER_DIR=/home/container \
+    STEAMCMD_SEED=/opt/steamcmd \
+    STEAMCMD_DIR=/home/container/steamcmd \
+    WINEPREFIX=/home/container/.wine \
+    DEDI_CONFIG=/home/container/DedicatedServerConfig.json
+COPY --from=steamcmd /opt/steamcmd /opt/steamcmd
+COPY --chmod=755 panel-entrypoint.sh /usr/local/bin/panel-entrypoint.sh
+RUN useradd -m -d /home/container -s /bin/bash container
+USER container
+WORKDIR /home/container
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/panel-entrypoint.sh"]
+
+# ---------------------------------------------------------------------------
+# docker compose image (the default target, so it stays last).
+FROM base-${TARGETARCH} AS compose
+ARG PUID=1000
+ARG PGID=1000
+ENV STEAM_HOME=/home/steam \
+    STEAMCMD_DIR=/opt/steamcmd \
+    SERVER_DIR=/home/steam/server \
+    STEAM_COMPAT_DATA_PATH=/home/steam/compatdata \
+    STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/steam/.steam/steam
+
+RUN groupadd -g "$PGID" steam \
+ && useradd -m -u "$PUID" -g steam -d "$STEAM_HOME" -s /bin/bash steam \
+ && mkdir -p "$SERVER_DIR" "$STEAM_COMPAT_DATA_PATH" "$STEAM_COMPAT_CLIENT_INSTALL_PATH" \
+ && chown -R steam:steam "$STEAM_HOME"
+COPY --from=steamcmd --chown=steam:steam /opt/steamcmd /opt/steamcmd
+
+USER steam
+WORKDIR /home/steam
 
 # Game files, Steam login cache (steamcmd keeps config/config.vdf under
 # ~/.steam/steam, so Steam Guard is only needed once), Wine prefix
@@ -129,13 +168,3 @@ VOLUME ["/home/steam/server", "/home/steam/.steam", "/home/steam/compatdata"]
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["start"]
-
-# Per-arch tail: which steamcmd client steamcmd.sh launches. Its default on x86
-# is the 32-bit client, which no longer works, so pick the 64-bit one.
-FROM runtime AS runtime-amd64
-ENV STEAM_PLATFORM=linux64
-
-FROM runtime AS runtime-arm64
-ENV STEAM_PLATFORM=linuxarm64
-
-FROM runtime-${TARGETARCH}
