@@ -73,7 +73,9 @@ require_user() {
 
 do_login() {
   require_user || return 1
-  echo "Logging in as $STEAM_USER. steamcmd will prompt for your password and Steam Guard code."
+  # Not echoing the username: console output can be visible to others (for
+  # example a panel's subusers). steamcmd itself still prints it on login.
+  echo "Logging in to Steam. steamcmd will prompt for your password and Steam Guard code."
   echo "The session token is cached in the steam-data volume, so later updates won't prompt."
   steamcmd +login "$STEAM_USER" +quit
 }
