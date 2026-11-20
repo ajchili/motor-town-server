@@ -29,6 +29,7 @@ USE_XVFB="${USE_XVFB:-1}"
 # running this many seconds later, it gets SIGTERM. Keep it below the stop
 # timeout of whatever stops the container (compose: stop_grace_period).
 STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
+STOPPING=0   # set when a stop signal arrives during an update
 # Panel eggs expose updates as AUTO_UPDATE (1/0 or true/false).
 case "${AUTO_UPDATE:-1}" in 0|false|False|FALSE|no) SKIP_UPDATE=1 ;; esac
 # "wine" (default): run Proton's bundled Wine directly. "proton": `proton run`,
@@ -119,7 +120,21 @@ do_update() {
     echo "app_update $STEAM_APP_ID$beta validate"
     echo 'quit'
   } > "$script"
-  steamcmd +runscript "$script" || status=$?
+  seed_steamcmd
+  # In the background so a stop signal during the update reaches steamcmd: with
+  # a foreground child, bash runs no trap until the child exits, and Docker
+  # killed steamcmd mid-write instead. steamcmd.sh runs the real binary as its
+  # child, so signal both. <&0 keeps the console as its input, for the Steam
+  # Guard prompt.
+  "$STEAMCMD_DIR/steamcmd.sh" +runscript "$script" <&0 &
+  local child=$!
+  trap 'STOPPING=1; pkill -TERM -P "$child" 2>/dev/null; kill -TERM "$child" 2>/dev/null' TERM INT
+  wait "$child" || status=$?
+  while kill -0 "$child" 2>/dev/null; do
+    status=0
+    wait "$child" || status=$?
+  done
+  trap - TERM INT
   rm -f "$script"
   return "$status"
 }
@@ -383,7 +398,13 @@ do_run() {
 
 do_start() {
   if [[ "${SKIP_UPDATE:-0}" != "1" ]]; then
-    if ! do_update; then
+    local update_ok=1
+    do_update || update_ok=0
+    if [[ "$STOPPING" == 1 ]]; then
+      echo "Stopped during the update; not starting the server."
+      exit 0
+    fi
+    if [[ "$update_ok" == 0 ]]; then
       # A failed update (Steam down, expired login) shouldn't keep an already
       # installed server offline.
       if [[ -n "$(find_exe)" ]]; then
