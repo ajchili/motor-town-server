@@ -10,7 +10,7 @@
     "description": "Motor Town: Behind The Wheel dedicated server (Windows build) running under GE-Proton's Wine. Needs a Steam account that owns Motor Town. Uses about 7 GB of memory once the world is loaded, so give it at least 10 GB. Players connect through Steam networking, so the server shows up in the game's server list without extra ports.",
     "features": [],
     "docker_images": {
-        "Motor Town (GE-Proton)": "motortown-server:panel"
+        "Motor Town (GE-Proton)": "docker.io/ajchili/motor-town-server:panel"
     },
     "file_denylist": [
         ".steam"
@@ -25,7 +25,7 @@
     "scripts": {
         "installation": {
             "script": "#!/bin/bash\n# Motor Town: nothing to download here. The server files come from Steam with\n# an account that owns the game, and Steam Guard needs the live console, so the\n# first start downloads them (about 2 GB) instead.\nset -euo pipefail\ncd /mnt/server\necho \"Motor Town server: the first start downloads the game files with steamcmd.\"\necho \"If Steam asks for a Steam Guard code, type it into the console,\"\necho \"or put a fresh code in the Steam Guard Code variable and restart.\"\n",
-            "container": "motortown-server:panel",
+            "container": "docker.io/ajchili/motor-town-server:panel",
             "entrypoint": "bash"
         }
     },
