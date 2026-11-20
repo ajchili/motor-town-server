@@ -92,6 +92,32 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Build panel image for testing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: panel
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: selftest:panel
+          cache-from: type=gha,scope=${{ matrix.arch }}
+
+      # Wine on this architecture, the way Calagopus Wings runs the container:
+      # its own UID, a bind-mounted server folder, read-only root filesystem,
+      # 100 MB /tmp and the same dropped capabilities.
+      - name: Selftest (Wine, registry, 64- and 32-bit programs)
+        run: |
+          dir="$RUNNER_TEMP/server"
+          mkdir -p "$dir"
+          sudo chown 988:988 "$dir"
+          docker run --rm \
+            --user 988:988 --read-only --tmpfs /tmp:rw,exec,nosuid,size=100M \
+            --cap-drop setpcap --cap-drop mknod --cap-drop audit_write --cap-drop net_raw \
+            --cap-drop dac_override --cap-drop fowner --cap-drop fsetid --cap-drop net_bind_service \
+            --cap-drop sys_chroot --cap-drop setfcap --cap-drop sys_ptrace \
+            -v "$dir:/home/container" -e 'STARTUP=motortown selftest' \
+            selftest:panel
+
       # Pushed by digest only; the merge job combines both arches under the tags.
       - name: Build panel image
         id: panel
