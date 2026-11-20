@@ -94,18 +94,32 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     PROTON_DIR=/opt/proton
 
-# steamcmd is native 64-bit on both arches, so no i386 libraries are needed.
 # Proton needs python3 and dlopens libvulkan at startup even for headless
 # servers; xvfb gives Wine a display to talk to so it doesn't stall on headless
 # hosts.
+#
+# amd64 also needs 32-bit libraries. The x86_64 GE-Proton runs 32-bit Windows
+# programs (several run while a new Wine prefix is set up) through its 32-bit
+# Linux half in lib/wine/i386-unix, which needs the i386 C runtime. Without it
+# Wine fails with "/lib/ld-linux.so.2: could not open" and no prefix gets
+# created. FreeType and X11 match what the 64-bit side has. The aarch64 build
+# runs 32-bit programs through FEX inside Wine instead, with no 32-bit Linux
+# libraries, so arm64 needs none. steamcmd is 64-bit on both.
 RUN --mount=type=cache,id=apt-cache-${TARGETARCH},target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=apt-lib-${TARGETARCH},target=/var/lib/apt,sharing=locked \
-    rm -f /etc/apt/apt.conf.d/docker-clean \
- && apt-get update \
- && apt-get install -y --no-install-recommends \
+    set -eu; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    i386=""; \
+    if [ "$TARGETARCH" = amd64 ]; then \
+      dpkg --add-architecture i386; \
+      i386="libc6:i386 libgcc-s1:i386 libstdc++6:i386 libfreetype6:i386 libx11-6:i386 libxext6:i386"; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
       ca-certificates curl python3 procps tini locales-all \
       libfreetype6 libvulkan1 \
-      xvfb xauth
+      xvfb xauth \
+      $i386
 
 # Wine/Proton reads /etc/machine-id, which slim images don't ship. Each target
 # links it into its persistent data, where the entrypoint creates a random one
