@@ -310,11 +310,19 @@ do_run() {
     # Session..". Point it at the game server's own copy on every start.
     local steamclient_win="Z:${SERVER_DIR//\//\\}\\steamclient64.dll"
     if [[ -f "$SERVER_DIR/steamclient64.dll" ]]; then
-      local key='HKCU\Software\Valve\Steam\ActiveProcess'
-      "$WINE" reg add "$key" /v SteamClientDll64 /d "$steamclient_win" /f >/dev/null 2>&1
-      "$WINE" reg add "$key" /v SteamClientDll /d "Z:${SERVER_DIR//\//\\}\\steamclient.dll" /f >/dev/null 2>&1
-      "$WINE" reg add "$key" /v SteamPath /d "Z:${SERVER_DIR//\//\\}" /f >/dev/null 2>&1
-      echo "Steam client library: $steamclient_win"
+      local key='HKCU\Software\Valve\Steam\ActiveProcess' name value reg_ok=1
+      for name in SteamClientDll64 SteamClientDll SteamPath; do
+        case "$name" in
+          SteamClientDll64) value="$steamclient_win" ;;
+          SteamClientDll)   value="Z:${SERVER_DIR//\//\\}\\steamclient.dll" ;;
+          SteamPath)        value="Z:${SERVER_DIR//\//\\}" ;;
+        esac
+        if ! "$WINE" reg add "$key" /v "$name" /d "$value" /f >/dev/null 2>&1; then
+          echo "Warning: couldn't set $name in the Wine registry; Steam session creation will likely hang." >&2
+          reg_ok=0
+        fi
+      done
+      if [[ "$reg_ok" == 1 ]]; then echo "Steam client library: $steamclient_win"; fi
     else
       echo "Warning: $SERVER_DIR/steamclient64.dll not found; Steam session creation will likely hang." >&2
     fi
