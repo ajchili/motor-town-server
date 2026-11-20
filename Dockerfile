@@ -107,8 +107,10 @@ RUN --mount=type=cache,id=apt-cache-${TARGETARCH},target=/var/cache/apt,sharing=
       libfreetype6 libvulkan1 \
       xvfb xauth
 
-# Wine/Proton reads /etc/machine-id, which slim images don't ship.
-RUN tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
+# Wine/Proton reads /etc/machine-id, which slim images don't ship. Each target
+# links it into its persistent data, where the entrypoint creates a random one
+# on first start, so every server gets its own ID rather than sharing one baked
+# into the image (and it works with a read-only root filesystem).
 
 # Big, rarely-changing payload first...
 COPY --from=proton /opt/proton /opt/proton
@@ -145,7 +147,8 @@ ENV HOME=/home/container \
     DEDI_CONFIG=/home/container/DedicatedServerConfig.json
 COPY --from=steamcmd /opt/steamcmd /opt/steamcmd
 COPY --chmod=755 panel-entrypoint.sh /usr/local/bin/panel-entrypoint.sh
-RUN useradd -m -d /home/container -s /bin/bash container
+RUN useradd -m -d /home/container -s /bin/bash container \
+ && ln -sf /home/container/.machine-id /etc/machine-id
 USER container
 WORKDIR /home/container
 # No `tini -g`: the stop signal must go only to the entrypoint, which asks the
@@ -169,7 +172,8 @@ ENV STEAM_HOME=/home/steam \
     STEAM_COMPAT_DATA_PATH=/home/steam/compatdata \
     STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/steam/.steam/steam
 
-RUN groupadd -g "$PGID" steam \
+RUN ln -sf /home/steam/.steam/machine-id /etc/machine-id \
+ && groupadd -g "$PGID" steam \
  && useradd -m -u "$PUID" -g steam -d "$STEAM_HOME" -s /bin/bash steam \
  && mkdir -p "$SERVER_DIR" "$STEAM_COMPAT_DATA_PATH" "$STEAM_COMPAT_CLIENT_INSTALL_PATH" \
  && chown -R steam:steam "$STEAM_HOME"

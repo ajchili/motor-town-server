@@ -41,6 +41,17 @@ export WINEDEBUG="${WINEDEBUG:--all}"
 export PROTON_USE_XALIA=0   # Proton's controller-accessibility helper; crashes headless
 WINE="$PROTON_DIR/files/bin/wine"
 
+# /etc/machine-id links into the server's persistent data (see the Dockerfile);
+# create a random ID there on first start.
+ensure_machine_id() {
+  local target
+  target="$(readlink /etc/machine-id 2>/dev/null)" || return 0
+  [[ -s "$target" ]] && return 0
+  mkdir -p "$(dirname "$target")"
+  tr -d '-' < /proc/sys/kernel/random/uuid > "$target"
+}
+ensure_machine_id
+
 # Panel image: steamcmd self-updates, so it runs from a writable copy of the
 # image's seed in the persistent server folder.
 seed_steamcmd() {
