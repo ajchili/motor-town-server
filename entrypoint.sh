@@ -9,6 +9,11 @@
 #   shell   drop into bash
 set -euo pipefail
 
+# Set by the image (Dockerfile ENV) for each target.
+SERVER_DIR="${SERVER_DIR:?SERVER_DIR is not set}"
+STEAMCMD_DIR="${STEAMCMD_DIR:?STEAMCMD_DIR is not set}"
+PROTON_DIR="${PROTON_DIR:?PROTON_DIR is not set}"
+
 STEAM_APP_ID="${STEAM_APP_ID:-2223650}"           # "Motor Town: Behind The Wheel - Dedicated Server" (what steamcmd downloads)
 STEAM_GAME_APP_ID="${STEAM_GAME_APP_ID:-1369670}" # the base game; what the server must identify as to Steam
 STEAM_BETA="${STEAM_BETA:-}"                      # e.g. "beta"
@@ -233,7 +238,8 @@ start_xvfb() {
     echo "Xvfb failed to start." >&2
     return 1
   fi
-  export DISPLAY=":$(tr -dc '0-9' < "$display_file")"
+  DISPLAY=":$(tr -dc '0-9' < "$display_file")"
+  export DISPLAY
   rm -f "$display_file"
 }
 
@@ -431,13 +437,13 @@ do_start() {
   do_run "$@"
 }
 
-cmd="${1:-start}"
+action="${1:-start}"
 [[ $# -gt 0 ]] && shift
-case "$cmd" in
+case "$action" in
   login)  do_login ;;
   update) do_update ;;
   start)  do_start "$@" ;;
   run)    do_run "$@" ;;
   shell)  exec bash ;;
-  *)      exec "$cmd" "$@" ;;
+  *)      exec "$action" "$@" ;;
 esac
