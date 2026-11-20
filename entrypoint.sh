@@ -276,11 +276,31 @@ stop_server() {
   WATCHDOG_PID=$!
 }
 
-# Create the Wine prefix on first use. A failure here used to be hidden and
-# only showed up later as registry warnings and a server that exits with
-# status 1, so stop with Wine's own output instead.
+# Create the Wine prefix on first use. A prefix only counts as ready once
+# wineboot has finished successfully, which is recorded in a marker file:
+# checking for system.reg alone trusted half-built prefixes (system.reg is
+# written early), such as one left by a failed first start, and the server then
+# failed with a bare exit code. A prefix without the marker is moved aside to
+# <prefix>.incomplete and rebuilt; it holds nothing the server needs (game files,
+# saves and settings live in the server folder, and the registry values are
+# set on every start).
+PREFIX_MARKER=".motortown-prefix-ready"
 create_prefix() {
-  [[ -f "$WINEPREFIX/system.reg" ]] && return 0
+  [[ -f "$WINEPREFIX/$PREFIX_MARKER" ]] && return 0
+  if [[ -e "$WINEPREFIX" ]]; then
+    # Only ever move something that is a Wine prefix, never the server or home
+    # folder a misconfigured WINEPREFIX might point at.
+    local real
+    real="$(realpath -m "$WINEPREFIX")"
+    if [[ "$real" == "/" || "$real" == "$(realpath -m "$SERVER_DIR")" || "$real" == "$(realpath -m "$HOME")" ]] \
+       || [[ ! -e "$WINEPREFIX/system.reg" && ! -e "$WINEPREFIX/drive_c" && ! -e "$WINEPREFIX/dosdevices" && -n "$(ls -A "$WINEPREFIX" 2>/dev/null)" ]]; then
+      echo "WINEPREFIX=$WINEPREFIX exists but isn't a Wine prefix; not touching it." >&2
+      return 1
+    fi
+    echo "Wine prefix in $WINEPREFIX never finished setting up; moving it to $WINEPREFIX.incomplete and rebuilding."
+    rm -rf "$WINEPREFIX.incomplete"
+    mv "$WINEPREFIX" "$WINEPREFIX.incomplete"
+  fi
   echo "Creating Wine prefix in $WINEPREFIX (first run only)..."
   local log status=0
   log="$(mktemp "${TMPDIR:-/tmp}/wineboot.XXXXXX")"
@@ -293,6 +313,10 @@ create_prefix() {
     return 1
   fi
   rm -f "$log"
+  cut -d' ' -f2 "$PROTON_DIR/version" > "$WINEPREFIX/$PREFIX_MARKER" 2>/dev/null \
+    || : > "$WINEPREFIX/$PREFIX_MARKER"
+  # The rebuilt prefix works, so the old one is no longer needed.
+  rm -rf "$WINEPREFIX.incomplete"
 }
 
 # `selftest`: check that Wine works in this container, without game files or a
@@ -369,6 +393,7 @@ do_run() {
 
   echo "Launching ($LAUNCHER): $exe ${args[*]}"
   echo "Proton/Wine: $(cut -d' ' -f2 "$PROTON_DIR/version" 2>/dev/null || echo unknown)"
+  if [[ "$WINEDEBUG" != "-all" ]]; then echo "Wine debug output: WINEDEBUG=$WINEDEBUG"; fi
   echo "Following $logfile"
   # Run from the server root like RunDedicatedServer.bat does: the game
   # server's steamclient64.dll lives there, not next to the exe.
