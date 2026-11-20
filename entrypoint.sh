@@ -154,6 +154,11 @@ do_run() {
     exit 1
   fi
 
+  # The Steam login is only for steamcmd. Wine copies the environment into the
+  # Windows process, where the game, anything it starts, and its crash reports
+  # (which include memory dumps) could read it, so drop it before launching.
+  unset STEAM_USER STEAM_PASS STEAM_AUTH
+
   # Steam API reads steam_appid.txt next to the binary when not launched by
   # Steam. It must hold the base game's app ID, not the dedicated server's
   # download ID, or the server never finishes "Creating Session..".
