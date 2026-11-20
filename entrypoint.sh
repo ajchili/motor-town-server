@@ -6,6 +6,7 @@
 #   run     run the server without updating
 # start/run take the server's command line as extra arguments, overriding
 # SERVER_ARGS (the panel egg's startup command uses this).
+#   selftest  check that Wine works here (no game files or Steam login needed)
 #   shell   drop into bash
 set -euo pipefail
 
@@ -275,6 +276,49 @@ stop_server() {
   WATCHDOG_PID=$!
 }
 
+# Create the Wine prefix on first use. A failure here used to be hidden and
+# only showed up later as registry warnings and a server that exits with
+# status 1, so stop with Wine's own output instead.
+create_prefix() {
+  [[ -f "$WINEPREFIX/system.reg" ]] && return 0
+  echo "Creating Wine prefix in $WINEPREFIX (first run only)..."
+  local log status=0
+  log="$(mktemp "${TMPDIR:-/tmp}/wineboot.XXXXXX")"
+  WINEDEBUG="${WINEDEBUG_PREFIX:-err+all}" "$WINE" wineboot -i >"$log" 2>&1 || status=$?
+  "$PROTON_DIR/files/bin/wineserver" -w 2>/dev/null || true
+  if [[ "$status" -ne 0 || ! -f "$WINEPREFIX/system.reg" ]]; then
+    echo "Couldn't create the Wine prefix (wineboot exit status $status). Wine said:" >&2
+    tail -n 30 "$log" >&2
+    rm -f "$log"
+    return 1
+  fi
+  rm -f "$log"
+}
+
+# `selftest`: check that Wine works in this container, without game files or a
+# Steam login: create the prefix, write and read back the registry, and run a
+# 64-bit and a 32-bit Windows program. CI runs it on both architectures.
+do_selftest() {
+  local key='HKCU\Software\MotorTownSelftest' out
+  if [[ "$USE_XVFB" == "1" ]]; then start_xvfb; fi
+  echo "Wine: $(cut -d' ' -f2 "$PROTON_DIR/version" 2>/dev/null || echo unknown), $(uname -m)"
+  create_prefix || return 1
+  "$WINE" reg add "$key" /v ok /d yes /f >/dev/null 2>&1 \
+    || { echo "selftest: registry write failed" >&2; return 1; }
+  out="$("$WINE" reg query "$key" /v ok 2>/dev/null | tr -d '\r')"
+  [[ "$out" == *yes* ]] || { echo "selftest: registry read-back failed" >&2; return 1; }
+  echo "registry: OK"
+  out="$("$WINE" 'C:\windows\system32\cmd.exe' /c echo selftest64 2>/dev/null | tr -d '\r')"
+  [[ "$out" == *selftest64* ]] || { echo "selftest: 64-bit Windows program failed" >&2; return 1; }
+  echo "64-bit program: OK"
+  out="$("$WINE" 'C:\windows\syswow64\cmd.exe' /c echo selftest32 2>/dev/null | tr -d '\r')"
+  [[ "$out" == *selftest32* ]] || { echo "selftest: 32-bit Windows program failed" >&2; return 1; }
+  echo "32-bit program: OK"
+  "$PROTON_DIR/files/bin/wineserver" -k 2>/dev/null || true
+  stop_xvfb
+  echo "selftest passed"
+}
+
 do_run() {
   local exe
   exe="$(find_exe)"
@@ -339,10 +383,7 @@ do_run() {
     # Note: the stop signal then goes to Proton's Python script, not the game.
     cmd=("$PROTON_DIR/proton" run "$exe" "${args[@]}")
   else
-    if [[ ! -f "$WINEPREFIX/system.reg" ]]; then
-      echo "Creating Wine prefix in $WINEPREFIX (first run only)..."
-      "$WINE" wineboot -i >/dev/null 2>&1 || true
-    fi
+    create_prefix || exit 1
     # steam_api64.dll finds the Steam client library through this registry key.
     # A prefix that Proton ever touched points it at Proton's Steam bridge in
     # C:\Program Files (x86)\Steam, which is empty without a desktop Steam client,
@@ -444,6 +485,7 @@ case "$action" in
   update) do_update ;;
   start)  do_start "$@" ;;
   run)    do_run "$@" ;;
+  selftest) do_selftest ;;
   shell)  exec bash ;;
   *)      exec "$action" "$@" ;;
 esac
