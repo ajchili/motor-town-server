@@ -1,7 +1,7 @@
 services:
   motortown:
     build: .
-    image: motortown-server:local
+    image: motor-town-server:local
     stdin_open: true
     tty: true
     environment:
