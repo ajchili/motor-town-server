@@ -147,6 +147,9 @@ if os.path.exists(config_path):
     except ValueError as e:
         print(f"Config: {config_path} is not valid JSON ({e}); leaving it as is", file=sys.stderr)
         sys.exit(0)
+if not isinstance(sample, dict) or not isinstance(config, dict):
+    print(f"Config: {config_path} or the sample isn't a JSON object; leaving it as is", file=sys.stderr)
+    sys.exit(0)
 safe = {
     "bEnableHostWebAPIServer": False,
     "HostWebAPIServerPassword": "",
@@ -155,18 +158,23 @@ safe = {
     "Password": "",
 }
 added = []
+retyped = []
 for key, value in sample.items():
     if key not in config:
         config[key] = safe.get(key, value)
         added.append(key)
     elif isinstance(value, str) and isinstance(config[key], (int, float)) and not isinstance(config[key], bool):
         config[key] = str(config[key])
-if added or not os.path.exists(config_path):
+        retyped.append(key)
+if added or retyped or not os.path.exists(config_path):
     os.makedirs(os.path.dirname(config_path) or ".", exist_ok=True)
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
         f.write("\n")
-    print(f"Config: added {len(added)} default keys from the sample to {config_path}")
+    if added:
+        print(f"Config: added {len(added)} default keys from the sample to {config_path}")
+    if retyped:
+        print(f"Config: stored {', '.join(retyped)} as text, as the server expects")
 PY
 }
 
