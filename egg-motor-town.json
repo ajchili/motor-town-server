@@ -140,6 +140,16 @@
             "user_editable": false,
             "rules": "nullable|string|max:64",
             "field_type": "text"
+        },
+        {
+            "name": "Wine Debug Output",
+            "description": "Which Wine messages to show in the console. -all hides them; set err+all to see Wine's errors when the server won't start.",
+            "env_variable": "WINEDEBUG",
+            "default_value": "-all",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:256",
+            "field_type": "text"
         }
     ]
 }
