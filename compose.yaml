@@ -1,0 +1,33 @@
+services:
+  motortown:
+    build: .
+    image: motortown-server:local
+    stdin_open: true
+    tty: true
+    environment:
+      STEAM_USER: ${STEAM_USER:?set STEAM_USER in .env}
+      STEAM_APP_ID: ${STEAM_APP_ID:-2223650}
+      STEAM_GAME_APP_ID: ${STEAM_GAME_APP_ID:-1369670}
+      STEAM_BETA: ${STEAM_BETA:-}
+      STEAM_BETA_PASSWORD: ${STEAM_BETA_PASSWORD:-}
+      SERVER_EXE: ${SERVER_EXE:-}
+      # Empty = the server's own defaults (Jeju_World?listen? -server -log -useperfthreads)
+      SERVER_ARGS: ${SERVER_ARGS:-}
+      SKIP_UPDATE: ${SKIP_UPDATE:-0}
+    ports:
+      - "7777:7777/udp"
+      - "27015:27015/udp"
+      - "27015:27015/tcp"
+    volumes:
+      - server-files:/home/steam/server
+      - steam-data:/home/steam/.steam
+      - proton-prefix:/home/steam/compatdata
+      # DedicatedServerConfig.json lives here, outside the game files, so
+      # server updates never overwrite it. Edit it on the host and restart.
+      - ./config:/home/steam/config
+    restart: unless-stopped
+
+volumes:
+  server-files:
+  steam-data:
+  proton-prefix:
