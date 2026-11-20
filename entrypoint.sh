@@ -29,7 +29,13 @@ USE_XVFB="${USE_XVFB:-1}"
 # running this many seconds later, it gets SIGTERM. Keep it below the stop
 # timeout of whatever stops the container (compose: stop_grace_period).
 STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
-STOPPING=0   # set when a stop signal arrives during an update
+# Set when a stop signal arrives before the server is running (during the
+# update or the Wine setup), so startup stops instead of going on. Without a
+# handler, bash ignores SIGINT (the panel's stop) whenever the command it is
+# running survives it.
+STOPPING=0
+on_stop_before_launch() { STOPPING=1; }
+trap on_stop_before_launch TERM INT
 # Panel eggs expose updates as AUTO_UPDATE (1/0 or true/false).
 case "${AUTO_UPDATE:-1}" in 0|false|False|FALSE|no) SKIP_UPDATE=1 ;; esac
 # "wine" (default): run Proton's bundled Wine directly. "proton": `proton run`,
@@ -134,7 +140,7 @@ do_update() {
     status=0
     wait "$child" || status=$?
   done
-  trap - TERM INT
+  trap on_stop_before_launch TERM INT
   rm -f "$script"
   return "$status"
 }
@@ -376,10 +382,17 @@ do_run() {
     cmd=("$WINE" "$exe" "${args[@]}")
   fi
 
+  if [[ "$STOPPING" == 1 ]]; then
+    stop_xvfb
+    echo "Stopped before the server started."
+    exit 0
+  fi
   "${cmd[@]}" &
   SERVER_PID=$!
   # docker stop / the panel's stop / Ctrl-C arrive here via tini.
   trap stop_server TERM INT
+  # A signal that came between the check above and the trap.
+  if [[ "$STOPPING" == 1 ]]; then stop_server; fi
   # tail exits on its own when the server process does.
   tail -n +1 -F --pid="$SERVER_PID" "$logfile" 2>/dev/null &
   local status=0
