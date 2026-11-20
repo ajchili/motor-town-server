@@ -148,7 +148,10 @@ COPY --chmod=755 panel-entrypoint.sh /usr/local/bin/panel-entrypoint.sh
 RUN useradd -m -d /home/container -s /bin/bash container
 USER container
 WORKDIR /home/container
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/panel-entrypoint.sh"]
+# No `tini -g`: the stop signal must go only to the entrypoint, which asks the
+# game to save and quit. Signalling the whole group also killed Xvfb, and Wine
+# with it, before the game could save.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/panel-entrypoint.sh"]
 
 # ---------------------------------------------------------------------------
 # docker compose image (the default target, so it stays last).

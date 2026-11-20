@@ -25,6 +25,10 @@ SERVER_ARGS="${SERVER_ARGS:-Jeju_World?listen? -server -log -useperfthreads}"
 # Kept outside the game files so updates don't touch it; passed via -DediConfig.
 DEDI_CONFIG="${DEDI_CONFIG:-/home/steam/config/DedicatedServerConfig.json}"
 USE_XVFB="${USE_XVFB:-1}"
+# On stop, the server gets SIGINT, which makes it save and quit. If it's still
+# running this many seconds later, it gets SIGTERM. Keep it below the stop
+# timeout of whatever stops the container (compose: stop_grace_period).
+STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
 # Panel eggs expose updates as AUTO_UPDATE (1/0 or true/false).
 case "${AUTO_UPDATE:-1}" in 0|false|False|FALSE|no) SKIP_UPDATE=1 ;; esac
 # "wine" (default): run Proton's bundled Wine directly. "proton": `proton run`,
@@ -166,6 +170,63 @@ if added or not os.path.exists(config_path):
 PY
 }
 
+# A virtual display for Wine, run directly rather than through xvfb-run so the
+# stop signal reaches the game instead of a wrapper script, and the display
+# stays up until the game has finished saving (otherwise Wine dies with
+# "XIO: fatal IO error" the moment the display goes away).
+XVFB_PID=""
+start_xvfb() {
+  local display_file
+  display_file="$(mktemp "${TMPDIR:-/tmp}/xvfb-display.XXXXXX")"
+  Xvfb -displayfd 3 -screen 0 1024x768x24 -nolisten tcp 3>"$display_file" >/dev/null 2>&1 &
+  XVFB_PID=$!
+  local _
+  for _ in $(seq 1 100); do
+    [[ -s "$display_file" ]] && break
+    kill -0 "$XVFB_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [[ ! -s "$display_file" ]]; then
+    rm -f "$display_file"
+    echo "Xvfb failed to start." >&2
+    return 1
+  fi
+  export DISPLAY=":$(tr -dc '0-9' < "$display_file")"
+  rm -f "$display_file"
+}
+
+stop_xvfb() {
+  if [[ -n "$XVFB_PID" ]]; then
+    kill "$XVFB_PID" 2>/dev/null || true
+    wait "$XVFB_PID" 2>/dev/null || true
+    XVFB_PID=""
+  fi
+}
+
+# Signal handler while the server runs: the first TERM/INT asks it to save and
+# quit, and starts a watchdog that forces it after STOP_TIMEOUT. A second
+# signal forces it right away.
+SERVER_PID=""
+WATCHDOG_PID=""
+stop_server() {
+  [[ -n "$SERVER_PID" ]] || return 0
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    echo "Stopping now (SIGTERM)."
+    kill -TERM "$SERVER_PID" 2>/dev/null || true
+    return 0
+  fi
+  echo "Stopping: asking the server to save and quit (forced after ${STOP_TIMEOUT}s)..."
+  kill -INT "$SERVER_PID" 2>/dev/null || true
+  (
+    sleep "$STOP_TIMEOUT"
+    if kill -0 "$SERVER_PID" 2>/dev/null; then
+      echo "Server still running after ${STOP_TIMEOUT}s; stopping it (SIGTERM)."
+      kill -TERM "$SERVER_PID" 2>/dev/null || true
+    fi
+  ) &
+  WATCHDOG_PID=$!
+}
+
 do_run() {
   local exe
   exe="$(find_exe)"
@@ -221,13 +282,18 @@ do_run() {
   # server's steamclient64.dll lives there, not next to the exe.
   cd "$SERVER_DIR"
 
+  if [[ "$USE_XVFB" == "1" ]]; then
+    start_xvfb
+  fi
+
   local cmd
   if [[ "$LAUNCHER" == "proton" ]]; then
+    # Note: the stop signal then goes to Proton's Python script, not the game.
     cmd=("$PROTON_DIR/proton" run "$exe" "${args[@]}")
   else
     if [[ ! -f "$WINEPREFIX/system.reg" ]]; then
       echo "Creating Wine prefix in $WINEPREFIX (first run only)..."
-      xvfb-run --auto-servernum "$WINE" wineboot -i >/dev/null 2>&1 || true
+      "$WINE" wineboot -i >/dev/null 2>&1 || true
     fi
     # steam_api64.dll finds the Steam client library through this registry key.
     # A prefix that Proton ever touched points it at Proton's Steam bridge in
@@ -261,22 +327,27 @@ do_run() {
     else
       echo "Warning: $STEAMCMD_DIR/$plat/steamclient.so not found; Steam session creation will likely hang." >&2
     fi
+    # The wine loader becomes the game process (same PID), so signals sent to
+    # this PID reach the game itself.
     cmd=("$WINE" "$exe" "${args[@]}")
-  fi
-  if [[ "$USE_XVFB" == "1" ]]; then
-    cmd=(xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" "${cmd[@]}")
   fi
 
   "${cmd[@]}" &
-  local pid=$!
-  # Forward docker stop / Ctrl-C to the server (tini delivers them to us).
-  trap 'kill -TERM "$pid" 2>/dev/null' TERM INT
+  SERVER_PID=$!
+  # docker stop / the panel's stop / Ctrl-C arrive here via tini.
+  trap stop_server TERM INT
   # tail exits on its own when the server process does.
-  tail -n +1 -F --pid="$pid" "$logfile" 2>/dev/null &
+  tail -n +1 -F --pid="$SERVER_PID" "$logfile" 2>/dev/null &
   local status=0
-  wait "$pid" || status=$?
+  wait "$SERVER_PID" || status=$?
   # wait returns early when a trapped signal arrives; wait again for the real exit.
-  while kill -0 "$pid" 2>/dev/null; do wait "$pid" || status=$?; done
+  while kill -0 "$SERVER_PID" 2>/dev/null; do
+    status=0
+    wait "$SERVER_PID" || status=$?
+  done
+  trap - TERM INT
+  if [[ -n "$WATCHDOG_PID" ]]; then kill "$WATCHDOG_PID" 2>/dev/null || true; fi
+  stop_xvfb
   echo "Server exited with status $status"
   return "$status"
 }

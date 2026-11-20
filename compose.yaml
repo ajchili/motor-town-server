@@ -26,6 +26,10 @@ services:
       # server updates never overwrite it. Edit it on the host and restart.
       - ./config:/home/steam/config
     restart: unless-stopped
+    # On stop the server gets SIGINT, saves and quits; the entrypoint forces it
+    # after STOP_TIMEOUT (60s), so allow a little more than that before Docker
+    # kills everything.
+    stop_grace_period: 90s
     # Hardening: nothing in the container needs root, extra capabilities, or a
     # writable image. Everything that changes lives in the volumes or /tmp.
     read_only: true
