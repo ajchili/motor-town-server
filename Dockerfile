@@ -21,7 +21,9 @@
 # packages, the entrypoint, or anything else in the final stage never
 # re-downloads them.
 
-ARG DEBIAN_IMAGE=debian:trixie-slim
+# Pinned by digest so a rebuild gets the same base. To update:
+#   docker buildx imagetools inspect debian:trixie-slim   (the "Digest:" line)
+ARG DEBIAN_IMAGE=debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # ---------------------------------------------------------------------------
 # Shared minimal downloader base (curl only)
@@ -37,26 +39,31 @@ RUN --mount=type=cache,id=apt-cache-${TARGETARCH},target=/var/cache/apt,sharing=
 # GE-Proton: rebuilt only when GE_PROTON_VERSION (or the arch) changes. The
 # tarball is also kept in a BuildKit cache mount, so even a forced rebuild
 # skips the download.
+#
+# The checksums are pinned here rather than fetched next to the tarball: a
+# .sha512sum from the same release would only catch a broken download, not a
+# replaced release. When changing GE_PROTON_VERSION, take both values from that
+# release's GE-Proton*-x86_64.sha512sum and GE-Proton*-aarch64.sha512sum.
 FROM fetch AS proton
 ARG TARGETARCH
 ARG GE_PROTON_VERSION=GE-Proton11-11
+ARG GE_PROTON_SHA512_X86_64=45721a7b625b2404d8896bb5e2a8b87fc9623a394873a6dd6b900c839681d5c01ec694ca00d003fc9c733c5f6c5648af8171985656f9fa47e20999fbebdbe235
+ARG GE_PROTON_SHA512_AARCH64=4863f86773514ce7cc2c7867d393b725fcd9e32f7948a3b4035ae67a84b3e0ff4b179c479079a0dcf141c159faa19f67e7b82b3ed4c4b0ef9720226d55594661
 RUN --mount=type=cache,target=/downloads \
     set -eux; \
     case "$TARGETARCH" in \
-      amd64) arch=x86_64 ;; \
-      arm64) arch=aarch64 ;; \
+      amd64) arch=x86_64;  sha="$GE_PROTON_SHA512_X86_64" ;; \
+      arm64) arch=aarch64; sha="$GE_PROTON_SHA512_AARCH64" ;; \
       *) echo "unsupported arch: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    base="https://github.com/GloriousEggroll/proton-ge-custom/releases/download/${GE_PROTON_VERSION}"; \
-    name="${GE_PROTON_VERSION}-${arch}"; \
+    name="${GE_PROTON_VERSION}-${arch}.tar.gz"; \
     cd /downloads; \
-    curl -fsSLo "${name}.sha512sum" "${base}/${name}.sha512sum"; \
-    if ! sha512sum -c --status "${name}.sha512sum" 2>/dev/null; then \
-      curl -fSLo "${name}.tar.gz" "${base}/${name}.tar.gz"; \
-      sha512sum -c "${name}.sha512sum"; \
+    if ! echo "$sha  $name" | sha512sum -c --status 2>/dev/null; then \
+      curl -fSLo "$name" "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/${GE_PROTON_VERSION}/${name}"; \
+      echo "$sha  $name" | sha512sum -c; \
     fi; \
     mkdir -p /opt/proton; \
-    tar -xzf "${name}.tar.gz" -C /opt/proton --strip-components=1
+    tar -xzf "$name" -C /opt/proton --strip-components=1
 
 # ---------------------------------------------------------------------------
 # steamcmd (it self-updates at runtime, so this rarely needs rebuilding).
