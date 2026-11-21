@@ -53,6 +53,12 @@ export WINEPREFIX="${WINEPREFIX:-$STEAM_COMPAT_DATA_PATH/pfx}"
 export WINEDEBUG="${WINEDEBUG:--all}"
 export PROTON_USE_XALIA=0   # Proton's controller-accessibility helper; crashes headless
 WINE="$PROTON_DIR/files/bin/wine"
+# Where Wine looks for the DLLs Proton ships outside Wine's own tree, as
+# Proton's launcher sets it (we run Wine directly; see LAUNCHER). On x86_64,
+# Wine's wined3d.dll (which the server loads through dxgi.dll) needs vkd3d's
+# DLLs from lib/vkd3d; without this the server exits with status 53 after
+# "Library libvkd3d-shader-1.dll ... not found".
+export WINEDLLPATH="$PROTON_DIR/files/lib/vkd3d:$PROTON_DIR/files/lib/wine${WINEDLLPATH:+:$WINEDLLPATH}"
 
 # /etc/machine-id links into the server's persistent data (see the Dockerfile);
 # create a random ID there on first start.
@@ -338,6 +344,20 @@ do_selftest() {
   out="$("$WINE" 'C:\windows\syswow64\cmd.exe' /c echo selftest32 2>/dev/null | tr -d '\r')"
   [[ "$out" == *selftest32* ]] || { echo "selftest: 32-bit Windows program failed" >&2; return 1; }
   echo "32-bit program: OK"
+  # The server loads Direct3D's dxgi.dll, which pulls in wined3d.dll and
+  # vkd3d's DLLs. regsvr32 loads a DLL with everything it imports, and Wine
+  # logs "err:module:import_dll" for any import it can't find.
+  local arch dir
+  for arch in 64 32; do
+    if [[ "$arch" == 64 ]]; then dir=system32; else dir=syswow64; fi
+    out="$(WINEDEBUG=err+module "$WINE" "C:\\windows\\$dir\\regsvr32.exe" /s dxgi.dll 2>&1 | tr -d '\r' || true)"
+    if [[ "$out" == *"err:module:import_dll"* ]]; then
+      echo "selftest: $arch-bit dxgi.dll is missing DLLs it needs:" >&2
+      grep "err:module:import_dll" <<< "$out" >&2
+      return 1
+    fi
+  done
+  echo "DirectX libraries (dxgi, wined3d, vkd3d): OK"
   "$PROTON_DIR/files/bin/wineserver" -k 2>/dev/null || true
   stop_xvfb
   echo "selftest passed"
