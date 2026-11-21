@@ -125,14 +125,22 @@ jobs:
       - name: DirectX check catches missing DLLs
         if: matrix.arch == 'amd64'
         run: |
+          # The prefix's parent must be owned by the user: Wine refuses /tmp itself.
           out="$(docker run --rm --tmpfs /tmp:rw,exec --entrypoint bash selftest:panel -c '
-            export WINEPREFIX=/tmp/pfx
+            mkdir -p /tmp/wine
+            export WINEPREFIX=/tmp/wine/pfx
             source <(sed -n "/^start_xvfb() {/,/^}/p" /usr/local/bin/entrypoint.sh)
             start_xvfb
             W=/opt/proton/files/bin/wine
             WINEDEBUG=-all "$W" wineboot -i >/dev/null 2>&1
+            /opt/proton/files/bin/wineserver -w   # registry is written when it exits
+            if [ ! -f "$WINEPREFIX/system.reg" ]; then echo "HARNESS: no Wine prefix was created"; exit 0; fi
             env -u WINEDLLPATH WINEDEBUG=err+module "$W" regsvr32 /s dxgi.dll 2>&1 | tr -d "\r"' || true)"
-          if grep -q "err:module:import_dll" <<< "$out"; then
+          if grep -q "HARNESS:" <<< "$out"; then
+            echo "::error::This check's own setup failed (no Wine prefix), so it tested nothing:"
+            echo "$out" | tail -20
+            exit 1
+          elif grep -q "err:module:import_dll" <<< "$out"; then
             echo "Without WINEDLLPATH, Wine reports the missing DLLs, as expected:"
             grep "err:module:import_dll" <<< "$out"
           else
