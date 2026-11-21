@@ -118,6 +118,29 @@ jobs:
             -v "$dir:/home/container" -e 'STARTUP=motortown selftest' \
             selftest:panel
 
+      # Proves the selftest's DirectX check can fail: on x86_64, dxgi.dll only
+      # finds vkd3d's DLLs through WINEDLLPATH, so without it Wine must report
+      # missing imports (the server's exit status 53). The aarch64 build doesn't
+      # depend on vkd3d there, so this only applies to amd64.
+      - name: DirectX check catches missing DLLs
+        if: matrix.arch == 'amd64'
+        run: |
+          out="$(docker run --rm --tmpfs /tmp:rw,exec --entrypoint bash selftest:panel -c '
+            export WINEPREFIX=/tmp/pfx
+            source <(sed -n "/^start_xvfb() {/,/^}/p" /usr/local/bin/entrypoint.sh)
+            start_xvfb
+            W=/opt/proton/files/bin/wine
+            WINEDEBUG=-all "$W" wineboot -i >/dev/null 2>&1
+            env -u WINEDLLPATH WINEDEBUG=err+module "$W" regsvr32 /s dxgi.dll 2>&1 | tr -d "\r"' || true)"
+          if grep -q "err:module:import_dll" <<< "$out"; then
+            echo "Without WINEDLLPATH, Wine reports the missing DLLs, as expected:"
+            grep "err:module:import_dll" <<< "$out"
+          else
+            echo "::error::Without WINEDLLPATH no import errors appeared, so the selftest's DirectX check can't detect this failure."
+            echo "$out" | tail -20
+            exit 1
+          fi
+
       # Pushed by digest only; the merge job combines both arches under the tags.
       - name: Build panel image
         id: panel
