@@ -118,6 +118,38 @@ jobs:
             -v "$dir:/home/container" -e 'STARTUP=motortown selftest' \
             selftest:panel
 
+      # A prefix made by an older image: set up without WINEDLLPATH, so it
+      # lacks the vkd3d DLLs, with a layout-1 marker. Starting must update it in
+      # place, after which dxgi.dll has to load. This is the state existing
+      # servers are in when they get a new image.
+      - name: Selftest on a prefix from an older image
+        run: |
+          dir="$RUNNER_TEMP/old-prefix"
+          mkdir -p "$dir"
+          sudo chown 988:988 "$dir"
+          docker run --rm --user 988:988 --tmpfs /tmp:rw,exec -v "$dir:/home/container" \
+            --entrypoint bash selftest:panel -c '
+              export WINEPREFIX=/home/container/.wine
+              source <(sed -n "/^start_xvfb() {/,/^}/p" /usr/local/bin/entrypoint.sh)
+              start_xvfb
+              WINEDEBUG=-all /opt/proton/files/bin/wine wineboot -i >/dev/null 2>&1
+              /opt/proton/files/bin/wineserver -w
+              cut -d" " -f2 /opt/proton/version > "$WINEPREFIX/.motortown-prefix-ready"'
+          status=0
+          out="$(docker run --rm \
+            --user 988:988 --read-only --tmpfs /tmp:rw,exec,nosuid,size=100M \
+            --cap-drop setpcap --cap-drop mknod --cap-drop audit_write --cap-drop net_raw \
+            --cap-drop dac_override --cap-drop fowner --cap-drop fsetid --cap-drop net_bind_service \
+            --cap-drop sys_chroot --cap-drop setfcap --cap-drop sys_ptrace \
+            -v "$dir:/home/container" -e 'STARTUP=motortown selftest' \
+            selftest:panel 2>&1)" || status=$?
+          echo "$out"
+          if ! grep -q "Updating the Wine prefix" <<< "$out"; then
+            echo "::error::The older prefix wasn't updated."
+            exit 1
+          fi
+          exit "$status"
+
       # Proves the selftest's DirectX check can fail: on x86_64, dxgi.dll only
       # finds vkd3d's DLLs through WINEDLLPATH, so without it Wine must report
       # missing imports (the server's exit status 53). The aarch64 build doesn't
