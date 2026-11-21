@@ -290,9 +290,43 @@ stop_server() {
 # <prefix>.incomplete and rebuilt; it holds nothing the server needs (game files,
 # saves and settings live in the server folder, and the registry values are
 # set on every start).
+#
+# The marker also records a layout version: bump PREFIX_LAYOUT whenever what
+# setup puts into the prefix changes, and existing prefixes get updated in
+# place (wineboot -u) on their next start. Layout 2: setup runs with
+# WINEDLLPATH, which is when Wine copies Proton's vkd3d DLLs into the prefix;
+# setting it later at run time doesn't add them, so prefixes made before it
+# (layout 1) lack them and the server exits with status 53 on x86_64.
 PREFIX_MARKER=".motortown-prefix-ready"
+PREFIX_LAYOUT=2
+prefix_stamp() {
+  echo "$(cut -d' ' -f2 "$PROTON_DIR/version" 2>/dev/null || echo unknown) layout=$PREFIX_LAYOUT"
+}
+
+# Run wineboot with the given mode, waiting for wineserver so the registry is
+# written; on failure print what Wine said.
+run_wineboot() {
+  local mode="$1" log status=0
+  log="$(mktemp "${TMPDIR:-/tmp}/wineboot.XXXXXX")"
+  WINEDEBUG="${WINEDEBUG_PREFIX:-err+all}" "$WINE" wineboot "$mode" >"$log" 2>&1 || status=$?
+  "$PROTON_DIR/files/bin/wineserver" -w 2>/dev/null || true
+  if [[ "$status" -ne 0 || ! -f "$WINEPREFIX/system.reg" ]]; then
+    echo "wineboot $mode failed (exit status $status). Wine said:" >&2
+    tail -n 30 "$log" >&2
+    rm -f "$log"
+    return 1
+  fi
+  rm -f "$log"
+}
+
 create_prefix() {
-  [[ -f "$WINEPREFIX/$PREFIX_MARKER" ]] && return 0
+  if [[ -f "$WINEPREFIX/$PREFIX_MARKER" ]]; then
+    [[ "$(cat "$WINEPREFIX/$PREFIX_MARKER")" == "$(prefix_stamp)" ]] && return 0
+    echo "Updating the Wine prefix in $WINEPREFIX to the current setup..."
+    run_wineboot -u || { echo "Couldn't update the Wine prefix." >&2; return 1; }
+    prefix_stamp > "$WINEPREFIX/$PREFIX_MARKER"
+    return 0
+  fi
   if [[ -e "$WINEPREFIX" ]]; then
     # Only ever move something that is a Wine prefix, never the server or home
     # folder a misconfigured WINEPREFIX might point at.
@@ -308,19 +342,8 @@ create_prefix() {
     mv "$WINEPREFIX" "$WINEPREFIX.incomplete"
   fi
   echo "Creating Wine prefix in $WINEPREFIX (first run only)..."
-  local log status=0
-  log="$(mktemp "${TMPDIR:-/tmp}/wineboot.XXXXXX")"
-  WINEDEBUG="${WINEDEBUG_PREFIX:-err+all}" "$WINE" wineboot -i >"$log" 2>&1 || status=$?
-  "$PROTON_DIR/files/bin/wineserver" -w 2>/dev/null || true
-  if [[ "$status" -ne 0 || ! -f "$WINEPREFIX/system.reg" ]]; then
-    echo "Couldn't create the Wine prefix (wineboot exit status $status). Wine said:" >&2
-    tail -n 30 "$log" >&2
-    rm -f "$log"
-    return 1
-  fi
-  rm -f "$log"
-  cut -d' ' -f2 "$PROTON_DIR/version" > "$WINEPREFIX/$PREFIX_MARKER" 2>/dev/null \
-    || : > "$WINEPREFIX/$PREFIX_MARKER"
+  run_wineboot -i || { echo "Couldn't create the Wine prefix." >&2; return 1; }
+  prefix_stamp > "$WINEPREFIX/$PREFIX_MARKER"
   # The rebuilt prefix works, so the old one is no longer needed.
   rm -rf "$WINEPREFIX.incomplete"
 }
